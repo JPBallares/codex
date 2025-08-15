@@ -43,7 +43,6 @@ use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
 use crate::bottom_pane::CancellationEvent;
 use crate::bottom_pane::InputResult;
-use crate::exec_command::strip_bash_lc_and_escape;
 use crate::history_cell;
 use crate::history_cell::CommandOutput;
 use crate::history_cell::ExecCell;
@@ -62,6 +61,7 @@ use codex_file_search::FileMatch;
 use std::fs::File as StdFile;
 use std::io::BufRead;
 use std::io::BufReader;
+use uuid::Uuid;
 
 // Track information about an in-flight exec command.
 struct RunningCommand {
@@ -89,6 +89,7 @@ pub(crate) struct ChatWidget<'a> {
     interrupts: InterruptManager,
     // Whether a redraw is needed after handling the current event
     needs_redraw: bool,
+    session_id: Option<Uuid>,
 }
 
 struct UserMessage {
@@ -128,6 +129,7 @@ impl ChatWidget<'_> {
     fn on_session_configured(&mut self, event: codex_core::protocol::SessionConfiguredEvent) {
         self.bottom_pane
             .set_history_metadata(event.history_log_id, event.history_entry_count);
+        self.session_id = Some(event.session_id);
         self.add_to_history(&history_cell::new_session_info(&self.config, event, true));
         // If resuming a session, attempt to replay its transcript into the history view.
         if let Some(path) = self.config.experimental_resume.clone() {
@@ -192,6 +194,7 @@ impl ChatWidget<'_> {
         }
         // Mark task stopped and request redraw now that all content is in history.
         self.bottom_pane.set_task_running(false);
+        self.running_commands.clear();
         self.mark_needs_redraw();
     }
 
@@ -208,6 +211,7 @@ impl ChatWidget<'_> {
     fn on_error(&mut self, message: String) {
         self.add_to_history(&history_cell::new_error_event(message));
         self.bottom_pane.set_task_running(false);
+        self.running_commands.clear();
         self.stream.clear_all();
         self.mark_needs_redraw();
     }
@@ -396,17 +400,6 @@ impl ChatWidget<'_> {
 
     pub(crate) fn handle_exec_approval_now(&mut self, id: String, ev: ExecApprovalRequestEvent) {
         self.flush_answer_stream_with_separator();
-        // Log a background summary immediately so the history is chronological.
-        let cmdline = strip_bash_lc_and_escape(&ev.command);
-        let text = format!(
-            "command requires approval:\n$ {cmdline}{reason}",
-            reason = ev
-                .reason
-                .as_ref()
-                .map(|r| format!("\n{r}"))
-                .unwrap_or_default()
-        );
-        self.add_to_history(&history_cell::new_background_event(text));
 
         let request = ApprovalRequest::Exec {
             id,
@@ -483,6 +476,7 @@ impl ChatWidget<'_> {
     fn interrupt_running_task(&mut self) {
         if self.bottom_pane.is_task_running() {
             self.active_exec_cell = None;
+            self.running_commands.clear();
             self.bottom_pane.clear_ctrl_c_quit_hint();
             self.submit_op(Op::Interrupt);
             self.bottom_pane.set_task_running(false);
@@ -535,6 +529,7 @@ impl ChatWidget<'_> {
             task_complete_pending: false,
             interrupts: InterruptManager::new(),
             needs_redraw: false,
+            session_id: None,
         }
     }
 
@@ -691,6 +686,7 @@ impl ChatWidget<'_> {
         self.add_to_history(&history_cell::new_status_output(
             &self.config,
             &self.total_token_usage,
+            &self.session_id,
         ));
     }
 
