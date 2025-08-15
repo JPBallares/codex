@@ -12,9 +12,9 @@ use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::config_types::SandboxMode;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
-use serde_json::Value;
 use codex_login::CodexAuth;
 use codex_ollama::DEFAULT_OSS_MODEL;
+use serde_json::Value;
 use std::fs::OpenOptions;
 use std::path::PathBuf;
 use tracing::error;
@@ -297,6 +297,21 @@ fn find_latest_rollout_for_cwd(config: &Config) -> Option<std::path::PathBuf> {
     use std::time::SystemTime;
 
     fn extract_cwd_from_file(path: &PathBuf) -> Option<String> {
+        // Fast path: try header-only parse for V2 logs with `cwd` field
+        if let Ok(file) = fs::File::open(path) {
+            use std::io::{BufRead, BufReader};
+            let mut reader = BufReader::new(file);
+            let mut first_line = String::new();
+            if reader.read_line(&mut first_line).is_ok() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(first_line.trim()) {
+                    if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+                        return Some(c.to_string());
+                    }
+                }
+            }
+        }
+
+        // Fallback: scan lines for the environment context message
         let text = fs::read_to_string(path).ok()?;
         for line in text.lines().skip(1) {
             let v: Value = match serde_json::from_str(line) {
@@ -335,26 +350,45 @@ fn find_latest_rollout_for_cwd(config: &Config) -> Option<std::path::PathBuf> {
     let mut newest: Option<(SystemTime, PathBuf)> = None;
     let years = fs::read_dir(&root).ok()?;
     for y in years.flatten() {
-        if !y.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+        if !y.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
         let mons = fs::read_dir(y.path()).ok();
-        if mons.is_none() { continue; }
+        if mons.is_none() {
+            continue;
+        }
         for m in mons.unwrap().flatten() {
-            if !m.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            if !m.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
             let days = fs::read_dir(m.path()).ok();
-            if days.is_none() { continue; }
+            if days.is_none() {
+                continue;
+            }
             for d in days.unwrap().flatten() {
                 let files = fs::read_dir(d.path()).ok();
-                if files.is_none() { continue; }
+                if files.is_none() {
+                    continue;
+                }
                 for f in files.unwrap().flatten() {
                     let fpath = f.path();
                     let fname = fpath.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") { continue; }
+                    if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") {
+                        continue;
+                    }
                     // filter by cwd
                     if let Some(cwd_str) = extract_cwd_from_file(&fpath) {
-                        if cwd_str != config.cwd.to_string_lossy() { continue; }
-                    } else { continue; }
+                        if cwd_str != config.cwd.to_string_lossy() {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
 
-                    let mt = f.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+                    let mt = f
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .unwrap_or(SystemTime::UNIX_EPOCH);
                     match &newest {
                         Some((cur, _)) if *cur >= mt => {}
                         _ => newest = Some((mt, fpath)),
@@ -371,6 +405,21 @@ fn list_rollouts_for_cwd(config: &Config) -> Vec<std::path::PathBuf> {
     use std::path::PathBuf;
 
     fn extract_cwd_from_file(path: &PathBuf) -> Option<String> {
+        // Try header first
+        if let Ok(file) = fs::File::open(path) {
+            use std::io::{BufRead, BufReader};
+            let mut reader = BufReader::new(file);
+            let mut first_line = String::new();
+            if reader.read_line(&mut first_line).is_ok() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(first_line.trim()) {
+                    if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
+                        return Some(c.to_string());
+                    }
+                }
+            }
+        }
+
+        // Fallback: scan content
         let text = fs::read_to_string(path).ok()?;
         for line in text.lines().skip(1) {
             let v: Value = serde_json::from_str(line).ok()?;
@@ -401,19 +450,37 @@ fn list_rollouts_for_cwd(config: &Config) -> Vec<std::path::PathBuf> {
     let mut root = config.codex_home.clone();
     root.push("sessions");
     let mut matches = Vec::new();
-    let years = match fs::read_dir(&root) { Ok(r) => r, Err(_) => return matches };
+    let years = match fs::read_dir(&root) {
+        Ok(r) => r,
+        Err(_) => return matches,
+    };
     for y in years.flatten() {
-        if !y.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
-        let mons = match fs::read_dir(y.path()) { Ok(r) => r, Err(_) => continue };
+        if !y.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let mons = match fs::read_dir(y.path()) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
         for m in mons.flatten() {
-            if !m.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
-            let days = match fs::read_dir(m.path()) { Ok(r) => r, Err(_) => continue };
+            if !m.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let days = match fs::read_dir(m.path()) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
             for d in days.flatten() {
-                let files = match fs::read_dir(d.path()) { Ok(r) => r, Err(_) => continue };
+                let files = match fs::read_dir(d.path()) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
                 for f in files.flatten() {
                     let fpath = f.path();
                     let fname = fpath.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") { continue; }
+                    if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") {
+                        continue;
+                    }
                     if let Some(cwd_str) = extract_cwd_from_file(&fpath) {
                         if cwd_str == config.cwd.to_string_lossy() {
                             matches.push(fpath);

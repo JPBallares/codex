@@ -635,12 +635,22 @@ impl ChatWidget<'_> {
             EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta })
             | EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
                 delta,
-            }) => self.on_agent_reasoning_delta(delta),
+            }) => {
+                if !self.config.hide_agent_reasoning {
+                    self.on_agent_reasoning_delta(delta)
+                }
+            }
             EventMsg::AgentReasoning(AgentReasoningEvent { text })
             | EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
-                self.on_agent_reasoning_final(text)
+                if !self.config.hide_agent_reasoning {
+                    self.on_agent_reasoning_final(text)
+                }
             }
-            EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
+            EventMsg::AgentReasoningSectionBreak(_) => {
+                if !self.config.hide_agent_reasoning {
+                    self.on_reasoning_section_break()
+                }
+            }
             EventMsg::TaskStarted => self.on_task_started(),
             EventMsg::TaskComplete(TaskCompleteEvent { .. }) => self.on_task_complete(),
             EventMsg::TokenCount(token_usage) => self.on_token_count(token_usage),

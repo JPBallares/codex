@@ -34,8 +34,8 @@ pub(crate) use chat_composer::ChatComposer;
 pub(crate) use chat_composer::InputResult;
 
 use approval_modal_view::ApprovalModalView;
-use status_indicator_view::StatusIndicatorView;
 use codex_core::config::Config;
+use status_indicator_view::StatusIndicatorView;
 
 /// Pane displayed in the lower half of the chat UI.
 pub(crate) struct BottomPane<'a> {
@@ -82,7 +82,11 @@ impl BottomPane<'_> {
     }
 
     /// Show the session resume selection popup in place of the composer.
-    pub(crate) fn show_session_resume_popup(&mut self, config: &Config, app_event_tx: AppEventSender) {
+    pub(crate) fn show_session_resume_popup(
+        &mut self,
+        config: &Config,
+        app_event_tx: AppEventSender,
+    ) {
         let view = session_resume_popup::SessionResumePopup::new(config, app_event_tx);
         self.active_view = Some(Box::new(view));
         self.request_redraw();

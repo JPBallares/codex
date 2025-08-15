@@ -39,6 +39,9 @@ struct SessionMetaWithGit {
     meta: SessionMeta,
     #[serde(skip_serializing_if = "Option::is_none")]
     git: Option<GitInfo>,
+    /// Current working directory for the session (for fast filtering/resume).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cwd: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -116,6 +119,7 @@ impl RolloutRecorder {
                 instructions,
             }),
             cwd,
+            false,
         ));
 
         Ok(Self { tx })
@@ -215,12 +219,33 @@ impl RolloutRecorder {
             .read(true)
             .open(path)?;
 
+        // Detect if a prompt_prefix meta update already exists in the file so we avoid
+        // writing a duplicate when resuming.
+        let mut has_prompt_prefix = false;
+        if let Ok(text) = std::fs::read_to_string(path) {
+            for line in text.lines() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                    if v.get("record_type")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s == "meta_update")
+                        .unwrap_or(false)
+                    {
+                        if v.get("prompt_prefix").and_then(|x| x.as_str()).is_some() {
+                            has_prompt_prefix = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         let (tx, rx) = mpsc::channel::<RolloutCmd>(256);
         tokio::task::spawn(rollout_writer(
             tokio::fs::File::from_std(file),
             rx,
             None,
             cwd,
+            has_prompt_prefix,
         ));
         info!("Resumed rollout successfully from {path:?}");
         Ok((Self { tx }, saved))
@@ -292,6 +317,7 @@ async fn rollout_writer(
     mut rx: mpsc::Receiver<RolloutCmd>,
     mut meta: Option<SessionMeta>,
     cwd: std::path::PathBuf,
+    has_prompt_prefix: bool,
 ) -> std::io::Result<()> {
     let mut writer = JsonlWriter { file };
 
@@ -301,23 +327,108 @@ async fn rollout_writer(
         let session_meta_with_git = SessionMetaWithGit {
             meta: session_meta,
             git: git_info,
+            cwd: Some(cwd.to_string_lossy().to_string()),
         };
 
         // Write the SessionMeta as the first item in the file
         writer.write_line(&session_meta_with_git).await?;
     }
 
+    // Track whether we've already written the initial prompt prefix meta update.
+    let mut wrote_prompt_prefix = has_prompt_prefix;
+
     // Process rollout commands
     while let Some(cmd) = rx.recv().await {
         match cmd {
             RolloutCmd::AddItems(items) => {
                 for item in items {
+                    // If this is the first user message and we haven't recorded the prompt prefix yet,
+                    // extract and write a lightweight meta update.
+                    if !wrote_prompt_prefix {
+                        if let ResponseItem::Message { role, content, .. } = &item {
+                            if role == "user" {
+                                let mut acc = String::new();
+                                let mut contains_user_instructions_tag = false;
+                                for c in content {
+                                    if let crate::models::ContentItem::InputText { text }
+                                    | crate::models::ContentItem::OutputText { text } = c
+                                    {
+                                        if text.contains("<user_instructions>")
+                                            || text.contains("</user_instructions>")
+                                        {
+                                            contains_user_instructions_tag = true;
+                                        }
+                                        if !acc.is_empty() {
+                                            acc.push(' ');
+                                        }
+                                        acc.push_str(text);
+                                    }
+                                }
+                                let acc = acc.trim();
+                                // Only use true user-typed prompt (exclude tagged user_instructions
+                                // and slash commands from the composer).
+                                if !acc.is_empty()
+                                    && !acc.starts_with('/')
+                                    && !contains_user_instructions_tag
+                                {
+                                    let prefix: String = acc.chars().take(16).collect();
+                                    if !prefix.is_empty() {
+                                        #[derive(Serialize)]
+                                        struct MetaUpdateLine<'a> {
+                                            record_type: &'static str,
+                                            prompt_prefix: &'a str,
+                                        }
+                                        let line = MetaUpdateLine {
+                                            record_type: "meta_update",
+                                            prompt_prefix: &prefix,
+                                        };
+                                        let _ = writer.write_line(&line).await;
+                                        wrote_prompt_prefix = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     match item {
                         ResponseItem::Message { .. }
                         | ResponseItem::LocalShellCall { .. }
                         | ResponseItem::FunctionCall { .. }
                         | ResponseItem::FunctionCallOutput { .. }
                         | ResponseItem::Reasoning { .. } => {
+                            // If this is an assistant reply, emit/update a metadata title based on
+                            // the first 30 characters of the reply text, so the TUI can display it.
+                            if let ResponseItem::Message { role, content, .. } = &item {
+                                if role == "assistant" {
+                                    let mut acc = String::new();
+                                    for c in content {
+                                        if let crate::models::ContentItem::InputText { text }
+                                        | crate::models::ContentItem::OutputText { text } = c
+                                        {
+                                            if !acc.is_empty() {
+                                                acc.push(' ');
+                                            }
+                                            acc.push_str(text);
+                                        }
+                                    }
+                                    let title_src = acc.trim();
+                                    if !title_src.is_empty() {
+                                        let title: String = title_src.chars().take(30).collect();
+                                        if !title.is_empty() {
+                                            #[derive(Serialize)]
+                                            struct MetaUpdateTitle<'a> {
+                                                record_type: &'static str,
+                                                title: &'a str,
+                                            }
+                                            let line = MetaUpdateTitle {
+                                                record_type: "meta_update",
+                                                title: &title,
+                                            };
+                                            let _ = writer.write_line(&line).await;
+                                        }
+                                    }
+                                }
+                            }
                             writer.write_line(&item).await?;
                         }
                         ResponseItem::Other => {}

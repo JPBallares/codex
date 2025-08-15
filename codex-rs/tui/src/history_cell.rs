@@ -635,6 +635,11 @@ pub(crate) fn new_error_event(message: String) -> PlainHistoryCell {
     PlainHistoryCell { lines }
 }
 
+pub(crate) fn new_background_event(message: String) -> PlainHistoryCell {
+    let lines: Vec<Line<'static>> = vec![vec!["ℹ️ ".blue(), message.into()].into(), "".into()];
+    PlainHistoryCell { lines }
+}
+
 /// Render a user‑friendly plan update styled like a checkbox todo list.
 pub(crate) fn new_plan_update(update: UpdatePlanArgs) -> PlainHistoryCell {
     let UpdatePlanArgs { explanation, plan } = update;

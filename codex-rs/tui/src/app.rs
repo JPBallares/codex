@@ -444,8 +444,14 @@ impl App<'_> {
                         if let AppState::Chat { widget } = &mut self.app_state {
                             let cleared = crate::clear_conversations_for_cwd(&self.config);
                             let msg = match cleared {
-                                Ok(n) if n > 0 => format!("Cleared {n} saved conversation(s) for {}", self.config.cwd.display()),
-                                Ok(_) => format!("No saved conversations found for {}", self.config.cwd.display()),
+                                Ok(n) if n > 0 => format!(
+                                    "Cleared {n} saved conversation(s) for {}",
+                                    self.config.cwd.display()
+                                ),
+                                Ok(_) => format!(
+                                    "No saved conversations found for {}",
+                                    self.config.cwd.display()
+                                ),
                                 Err(e) => format!("Failed to clear conversations: {e}"),
                             };
                             widget.add_background_message(msg);

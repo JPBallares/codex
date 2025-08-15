@@ -876,6 +876,12 @@ impl Session {
         command.arg(json);
 
         // Fire-and-forget – we do not wait for completion.
+        // Suppress notifier stdout/stderr so external notifier logs do not leak
+        // into the Codex output stream.
+        command
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
         if let Err(e) = command.spawn() {
             warn!("failed to spawn notifier '{}': {e}", notify_command[0]);
         }
