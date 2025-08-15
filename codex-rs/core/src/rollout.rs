@@ -15,6 +15,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::mpsc::{self};
 use tokio::sync::oneshot;
+use tracing::debug;
 use tracing::info;
 use tracing::warn;
 use uuid::Uuid;
@@ -163,24 +164,42 @@ impl RolloutRecorder {
         path: &Path,
         cwd: std::path::PathBuf,
     ) -> std::io::Result<(Self, SavedSession)> {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+
         info!("Resuming rollout from {path:?}");
-        let text = tokio::fs::read_to_string(path).await?;
-        let mut lines = text.lines();
-        let meta_line = lines
-            .next()
-            .ok_or_else(|| IoError::other("empty session file"))?;
-        let session: SessionMeta = serde_json::from_str(meta_line)
+
+        let file = tokio::fs::File::open(path).await?;
+        let mut reader = BufReader::new(file);
+        let mut first_line = String::new();
+        let n = reader
+            .read_line(&mut first_line)
+            .await
+            .map_err(|e| IoError::other(format!("failed to read session header: {e}")))?;
+        if n == 0 {
+            return Err(IoError::other("empty session file"));
+        }
+        let session: SessionMeta = serde_json::from_str(first_line.trim())
             .map_err(|e| IoError::other(format!("failed to parse session meta: {e}")))?;
+
         let mut items = Vec::new();
         let mut state = SessionStateSnapshot::default();
 
-        for line in lines {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            let read = reader.read_line(&mut line).await?;
+            if read == 0 {
+                break;
+            }
             if line.trim().is_empty() {
                 continue;
             }
-            let v: Value = match serde_json::from_str(line) {
+            let v: Value = match serde_json::from_str(line.trim()) {
                 Ok(v) => v,
-                Err(_) => continue,
+                Err(e) => {
+                    debug!("resume: failed to parse json line: {e}");
+                    continue;
+                }
             };
             if v.get("record_type")
                 .and_then(|rt| rt.as_str())
@@ -202,7 +221,7 @@ impl RolloutRecorder {
                     ResponseItem::Other => {}
                 },
                 Err(e) => {
-                    warn!("failed to parse item: {v:?}, error: {e}");
+                    debug!("resume: failed to parse item: {e}");
                 }
             }
         }
@@ -382,7 +401,7 @@ async fn rollout_writer(
                                             record_type: "meta_update",
                                             prompt_prefix: &prefix,
                                         };
-                                        let _ = writer.write_line(&line).await;
+                                        writer.write_line(&line).await?;
                                         wrote_prompt_prefix = true;
                                     }
                                 }
@@ -424,7 +443,7 @@ async fn rollout_writer(
                                                 record_type: "meta_update",
                                                 title: &title,
                                             };
-                                            let _ = writer.write_line(&line).await;
+                                            writer.write_line(&line).await?;
                                         }
                                     }
                                 }
@@ -466,7 +485,7 @@ impl JsonlWriter {
     async fn write_line(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
         let mut json = serde_json::to_string(item)?;
         json.push('\n');
-        let _ = self.file.write_all(json.as_bytes()).await;
+        self.file.write_all(json.as_bytes()).await?;
         self.file.flush().await?;
         Ok(())
     }

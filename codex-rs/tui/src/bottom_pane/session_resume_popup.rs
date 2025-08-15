@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -26,11 +26,65 @@ use codex_core::config::Config;
 use codex_core::models::ResponseItem;
 use serde_json::Value;
 
-// Global cache for extracted titles to avoid re-reading unchanged files
-static TITLE_CACHE: OnceLock<Mutex<HashMap<PathBuf, (SystemTime, String)>>> = OnceLock::new();
+// LRU cache for extracted titles to avoid re-reading unchanged files and prevent unbounded growth
+struct TitleCache {
+    map: HashMap<PathBuf, (SystemTime, String)>,
+    order: VecDeque<PathBuf>,
+    capacity: usize,
+}
 
-fn get_title_cache() -> &'static Mutex<HashMap<PathBuf, (SystemTime, String)>> {
-    TITLE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+impl TitleCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn touch(&mut self, key: &PathBuf) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_front(key.clone());
+    }
+
+    fn evict_if_needed(&mut self) {
+        while self.map.len() > self.capacity {
+            if let Some(lru) = self.order.pop_back() {
+                self.map.remove(&lru);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn get_if_fresh(&mut self, key: &PathBuf, modified: SystemTime) -> Option<String> {
+        if let Some((seen_mtime, title)) = self.map.get(key) {
+            if *seen_mtime >= modified {
+                // Clone first to end the immutable borrow before mutating
+                let out = title.clone();
+                self.touch(key);
+                return Some(out);
+            }
+        }
+        None
+    }
+
+    fn put(&mut self, key: PathBuf, modified: SystemTime, title: String) {
+        self.map.insert(key.clone(), (modified, title));
+        self.touch(&key);
+        self.evict_if_needed();
+    }
+}
+
+// Global title cache with LRU eviction
+static TITLE_CACHE: OnceLock<Mutex<TitleCache>> = OnceLock::new();
+
+fn get_title_cache() -> &'static Mutex<TitleCache> {
+    // Default to a conservative cap to avoid UI stalls and memory growth.
+    // This can be tuned based on usage patterns.
+    TITLE_CACHE.get_or_init(|| Mutex::new(TitleCache::new(512)))
 }
 
 /// Popup for selecting a previous session (rollout file) to resume.
@@ -502,22 +556,19 @@ fn extract_title_cached(path: &PathBuf) -> Option<String> {
         Err(_) => return None,
     };
 
-    // Check cache first
-    {
-        let cache = get_title_cache().lock().ok()?;
-        if let Some((cached_time, cached_title)) = cache.get(path) {
-            if *cached_time >= modified {
-                return Some(cached_title.clone());
-            }
+    // First, attempt to get a fresh cached value without holding the lock during I/O
+    if let Ok(mut cache) = get_title_cache().lock() {
+        if let Some(title) = cache.get_if_fresh(path, modified) {
+            return Some(title);
         }
     }
 
-    // Extract title and update cache
+    // Extract title without holding the lock
     let title = extract_title_streaming(path)?;
 
-    // Update cache
+    // Update cache with new value
     if let Ok(mut cache) = get_title_cache().lock() {
-        cache.insert(path.clone(), (modified, title.clone()));
+        cache.put(path.clone(), modified, title.clone());
     }
 
     Some(title)
@@ -541,7 +592,7 @@ fn extract_title_streaming(path: &PathBuf) -> Option<String> {
     let mut files_mentioned: Vec<String> = Vec::new();
 
     // Limit processing to avoid reading huge files entirely
-    const MAX_LINES_TO_PROCESS: usize = 1000;
+    const MAX_LINES_TO_PROCESS: usize = 200;
     const MAX_CANDIDATES_PER_TYPE: usize = 5;
 
     let mut lines_processed = 0;
@@ -1060,9 +1111,29 @@ fn extract_header_fields(
 
 /// Find the most recent meta_update.title from the rollout file (scan from the end).
 fn extract_last_meta_title(path: &PathBuf) -> Option<String> {
-    let text = fs::read_to_string(path).ok()?;
+    use std::io::{Read, Seek, SeekFrom};
+
+    // Read only the tail of the file to avoid loading large files into memory.
+    // 64 KiB should be enough to capture recent meta updates.
+    const TAIL_READ_SIZE: u64 = 64 * 1024;
+
+    let mut file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = if len > TAIL_READ_SIZE {
+        len - TAIL_READ_SIZE
+    } else {
+        0
+    };
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return None;
+    }
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).is_err() {
+        return None;
+    }
+
     // Iterate from the end to find the most recent title meta update.
-    for line in text.lines().rev() {
+    for line in buf.lines().rev() {
         if line.trim().is_empty() {
             continue;
         }
