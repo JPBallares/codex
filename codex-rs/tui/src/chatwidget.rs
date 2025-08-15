@@ -59,6 +59,9 @@ use crate::streaming::controller::AppEventHistorySink;
 use crate::streaming::controller::StreamController;
 use codex_core::ConversationManager;
 use codex_file_search::FileMatch;
+use std::fs::File as StdFile;
+use std::io::BufRead;
+use std::io::BufReader;
 
 // Track information about an in-flight exec command.
 struct RunningCommand {
@@ -126,6 +129,13 @@ impl ChatWidget<'_> {
         self.bottom_pane
             .set_history_metadata(event.history_log_id, event.history_entry_count);
         self.add_to_history(&history_cell::new_session_info(&self.config, event, true));
+        // If resuming a session, attempt to replay its transcript into the history view.
+        if let Some(path) = self.config.experimental_resume.clone() {
+            if let Err(e) = replay_saved_session_into_history(self, &path) {
+                let msg = format!("Failed to replay saved session: {e}");
+                self.add_to_history(&history_cell::new_background_event(msg));
+            }
+        }
         if let Some(user_message) = self.initial_user_message.take() {
             self.submit_user_message(user_message);
         }
@@ -566,6 +576,10 @@ impl ChatWidget<'_> {
             .send(AppEvent::InsertHistory(cell.display_lines()));
     }
 
+    pub(crate) fn add_background_message(&mut self, text: String) {
+        self.add_to_history(&history_cell::new_background_event(text));
+    }
+
     fn submit_user_message(&mut self, user_message: UserMessage) {
         let UserMessage { text, image_paths } = user_message;
         let mut items: Vec<InputItem> = Vec::new();
@@ -664,6 +678,11 @@ impl ChatWidget<'_> {
         self.app_event_tx.send(AppEvent::RequestRedraw);
     }
 
+    pub(crate) fn show_session_resume_popup(&mut self) {
+        self.bottom_pane
+            .show_session_resume_popup(&self.config, self.app_event_tx.clone());
+    }
+
     pub(crate) fn add_diff_output(&mut self, diff_output: String) {
         self.add_to_history(&history_cell::new_diff_output(diff_output.clone()));
     }
@@ -706,6 +725,10 @@ impl ChatWidget<'_> {
 
     pub(crate) fn composer_is_empty(&self) -> bool {
         self.bottom_pane.composer_is_empty()
+    }
+
+    pub(crate) fn has_active_view(&self) -> bool {
+        self.bottom_pane.has_active_view()
     }
 
     pub(crate) fn insert_str(&mut self, text: &str) {
@@ -757,6 +780,52 @@ impl WidgetRef for &ChatWidget<'_> {
             cell.render_ref(active_cell_area, buf);
         }
     }
+}
+
+fn replay_saved_session_into_history(
+    widget: &mut ChatWidget,
+    path: &std::path::Path,
+) -> std::io::Result<()> {
+    let file = StdFile::open(path)?;
+    let reader = BufReader::new(file);
+
+    // Skip session meta line
+    let mut lines = reader.lines();
+    let _ = lines.next();
+
+    for line in lines.flatten() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let item: codex_core::models::ResponseItem = match serde_json::from_value(v) {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        match item {
+            codex_core::models::ResponseItem::Message { role, content, .. } => {
+                let mut text = String::new();
+                for c in content {
+                    if let codex_core::models::ContentItem::OutputText { text: t } = c {
+                        text.push_str(&t);
+                    }
+                }
+                if text.is_empty() {
+                    continue;
+                }
+                if role == "user" {
+                    widget.add_to_history(&history_cell::new_user_prompt(text));
+                } else if role == "assistant" {
+                    widget.on_agent_message(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn add_token_usage(current_usage: &TokenUsage, new_usage: &TokenUsage) -> TokenUsage {

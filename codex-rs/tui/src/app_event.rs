@@ -2,6 +2,7 @@ use codex_core::protocol::Event;
 use codex_file_search::FileMatch;
 use crossterm::event::KeyEvent;
 use ratatui::text::Line;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::app::ChatWidgetArgs;
@@ -56,6 +57,9 @@ pub(crate) enum AppEvent {
     StartCommitAnimation,
     StopCommitAnimation,
     CommitTick,
+
+    /// Resume a specific saved session from a rollout file path.
+    ResumeSession(PathBuf),
 
     /// Onboarding: result of login_with_chatgpt.
     OnboardingAuthComplete(Result<(), String>),

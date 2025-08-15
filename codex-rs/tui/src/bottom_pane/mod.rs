@@ -20,6 +20,7 @@ mod file_search_popup;
 mod popup_consts;
 mod scroll_state;
 mod selection_popup_common;
+mod session_resume_popup;
 mod status_indicator_view;
 mod textarea;
 
@@ -34,6 +35,7 @@ pub(crate) use chat_composer::InputResult;
 
 use approval_modal_view::ApprovalModalView;
 use status_indicator_view::StatusIndicatorView;
+use codex_core::config::Config;
 
 /// Pane displayed in the lower half of the chat UI.
 pub(crate) struct BottomPane<'a> {
@@ -79,6 +81,13 @@ impl BottomPane<'_> {
         }
     }
 
+    /// Show the session resume selection popup in place of the composer.
+    pub(crate) fn show_session_resume_popup(&mut self, config: &Config, app_event_tx: AppEventSender) {
+        let view = session_resume_popup::SessionResumePopup::new(config, app_event_tx);
+        self.active_view = Some(Box::new(view));
+        self.request_redraw();
+    }
+
     pub fn desired_height(&self, width: u16) -> u16 {
         let view_height = if let Some(view) = self.active_view.as_ref() {
             view.desired_height(width)
@@ -87,6 +96,11 @@ impl BottomPane<'_> {
         };
 
         view_height.saturating_add(Self::BOTTOM_PAD_LINES)
+    }
+
+    /// True if a modal/overlay view is currently active instead of the composer.
+    pub(crate) fn has_active_view(&self) -> bool {
+        self.active_view.is_some()
     }
 
     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {

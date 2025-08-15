@@ -360,3 +360,68 @@ impl JsonlWriter {
         Ok(())
     }
 }
+
+/// Find the most recent rollout file under `~/.codex/sessions`.
+/// Returns `None` when no sessions exist or the directory is missing.
+pub fn find_most_recent_rollout(config: &Config) -> Option<std::path::PathBuf> {
+    use std::fs;
+    use std::time::SystemTime;
+
+    let mut root = config.codex_home.clone();
+    root.push(SESSIONS_SUBDIR);
+    let Ok(mut stack) = fs::read_dir(&root) else {
+        return None;
+    };
+
+    // Accumulate candidate files with their modified time.
+    let mut newest: Option<(SystemTime, std::path::PathBuf)> = None;
+
+    // Walk year/mon/day hierarchy; ignore any non-directories defensively.
+    while let Some(Ok(entry)) = stack.next() {
+        let path = entry.path();
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if ft.is_dir() {
+            if let Ok(rd) = fs::read_dir(&path) {
+                for m in rd.flatten() {
+                    if let Ok(m_ft) = m.file_type() {
+                        if m_ft.is_dir() {
+                            if let Ok(rd2) = fs::read_dir(m.path()) {
+                                for d in rd2.flatten() {
+                                    // leaf day dir — enumerate files
+                                    if let Ok(rd3) = fs::read_dir(d.path()) {
+                                        for f in rd3.flatten() {
+                                            let fpath = f.path();
+                                            if !fpath
+                                                .file_name()
+                                                .and_then(|s| s.to_str())
+                                                .map(|s| {
+                                                    s.starts_with("rollout-")
+                                                        && s.ends_with(".jsonl")
+                                                })
+                                                .unwrap_or(false)
+                                            {
+                                                continue;
+                                            }
+                                            let mt = f
+                                                .metadata()
+                                                .and_then(|m| m.modified())
+                                                .unwrap_or(SystemTime::UNIX_EPOCH);
+                                            match &newest {
+                                                Some((cur, _)) if *cur >= mt => {}
+                                                _ => newest = Some((mt, fpath)),
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    newest.map(|(_, p)| p)
+}

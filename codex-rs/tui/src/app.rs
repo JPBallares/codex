@@ -307,7 +307,11 @@ impl App<'_> {
                         } => {
                             match &mut self.app_state {
                                 AppState::Chat { widget } => {
-                                    if widget.composer_is_empty() {
+                                    // If a modal/view is active (e.g., resume popup), forward
+                                    // the event so Ctrl-D can be used for half-page down.
+                                    if widget.has_active_view() {
+                                        self.dispatch_key_event(key_event);
+                                    } else if widget.composer_is_empty() {
                                         self.app_event_tx.send(AppEvent::ExitRequest);
                                     } else {
                                         // Treat Ctrl+D as a normal key event when the composer
@@ -345,6 +349,20 @@ impl App<'_> {
                     AppState::Chat { widget } => widget.submit_op(op),
                     AppState::Onboarding { .. } => {}
                 },
+                AppEvent::ResumeSession(path) => {
+                    let mut cfg = self.config.clone();
+                    cfg.experimental_resume = Some(path);
+                    let new_widget = Box::new(ChatWidget::new(
+                        cfg,
+                        self.server.clone(),
+                        self.app_event_tx.clone(),
+                        None,
+                        Vec::new(),
+                        self.enhanced_keys_supported,
+                    ));
+                    self.app_state = AppState::Chat { widget: new_widget };
+                    self.app_event_tx.send(AppEvent::RequestRedraw);
+                }
                 AppEvent::DispatchCommand(command) => match command {
                     SlashCommand::New => {
                         // User accepted – switch to chat view.
@@ -358,6 +376,11 @@ impl App<'_> {
                         ));
                         self.app_state = AppState::Chat { widget: new_widget };
                         self.app_event_tx.send(AppEvent::RequestRedraw);
+                    }
+                    SlashCommand::Resume => {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            widget.show_session_resume_popup();
+                        }
                     }
                     SlashCommand::Init => {
                         // Guard: do not run if a task is active.
@@ -415,6 +438,17 @@ impl App<'_> {
                     SlashCommand::Prompts => {
                         if let AppState::Chat { widget } = &mut self.app_state {
                             widget.add_prompts_output();
+                        }
+                    }
+                    SlashCommand::Clear => {
+                        if let AppState::Chat { widget } = &mut self.app_state {
+                            let cleared = crate::clear_conversations_for_cwd(&self.config);
+                            let msg = match cleared {
+                                Ok(n) if n > 0 => format!("Cleared {n} saved conversation(s) for {}", self.config.cwd.display()),
+                                Ok(_) => format!("No saved conversations found for {}", self.config.cwd.display()),
+                                Err(e) => format!("Failed to clear conversations: {e}"),
+                            };
+                            widget.add_background_message(msg);
                         }
                     }
                     #[cfg(debug_assertions)]

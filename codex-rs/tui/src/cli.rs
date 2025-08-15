@@ -56,4 +56,9 @@ pub struct Cli {
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
+
+    /// Continue the most recent saved conversation (resume last session).
+    /// This is a convenience for resuming the latest session rollout under ~/.codex/sessions.
+    #[arg(long = "continue", short = 'r')]
+    pub continue_session: bool,
 }

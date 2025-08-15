@@ -188,6 +188,15 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
             });
             LOGGER.write_json_line(value);
         }
+        AppEvent::ResumeSession(path) => {
+            let value = json!({
+                "ts": now_ts(),
+                "dir": "to_tui",
+                "kind": "resume_session",
+                "path": path,
+            });
+            LOGGER.write_json_line(value);
+        }
         // Noise or control flow – record variant only
         other => {
             let value = json!({

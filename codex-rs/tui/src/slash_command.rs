@@ -19,7 +19,11 @@ pub enum SlashCommand {
     Mention,
     Status,
     Prompts,
+    /// Clear saved conversations for the current directory.
+    Clear,
     Logout,
+    /// Resume the most recent saved conversation.
+    Resume,
     Quit,
     #[cfg(debug_assertions)]
     TestApproval,
@@ -32,11 +36,13 @@ impl SlashCommand {
             SlashCommand::New => "start a new chat during a conversation",
             SlashCommand::Init => "create an AGENTS.md file with instructions for Codex",
             SlashCommand::Compact => "summarize conversation to prevent hitting the context limit",
+            SlashCommand::Resume => "resume the most recent saved conversation",
             SlashCommand::Quit => "exit Codex",
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Status => "show current session configuration and token usage",
             SlashCommand::Prompts => "show example prompts",
+            SlashCommand::Clear => "clear saved conversations for the current directory",
             SlashCommand::Logout => "log out of Codex",
             #[cfg(debug_assertions)]
             SlashCommand::TestApproval => "test approval request",

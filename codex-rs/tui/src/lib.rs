@@ -12,6 +12,7 @@ use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::config_types::SandboxMode;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
+use serde_json::Value;
 use codex_login::CodexAuth;
 use codex_ollama::DEFAULT_OSS_MODEL;
 use std::fs::OpenOptions;
@@ -142,6 +143,13 @@ pub async fn run_main(
             }
         }
     };
+
+    // If requested, resume the most recent saved conversation.
+    if cli.continue_session && config.experimental_resume.is_none() {
+        if let Some(path) = find_latest_rollout_for_cwd(&config) {
+            config.experimental_resume = Some(path);
+        }
+    }
 
     // we load config.toml here to determine project state.
     #[allow(clippy::print_stderr)]
@@ -281,6 +289,153 @@ fn run_ratatui_app(
     session_log::log_session_end();
     // ignore error when collecting usage – report underlying error instead
     app_result.map(|_| usage)
+}
+
+fn find_latest_rollout_for_cwd(config: &Config) -> Option<std::path::PathBuf> {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::SystemTime;
+
+    fn extract_cwd_from_file(path: &PathBuf) -> Option<String> {
+        let text = fs::read_to_string(path).ok()?;
+        for line in text.lines().skip(1) {
+            let v: Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let item: codex_core::models::ResponseItem = match serde_json::from_value(v) {
+                Ok(i) => i,
+                Err(_) => continue,
+            };
+            if let codex_core::models::ResponseItem::Message { content, .. } = item {
+                for c in content {
+                    match c {
+                        codex_core::models::ContentItem::InputText { text }
+                        | codex_core::models::ContentItem::OutputText { text } => {
+                            if let Some(idx) = text.find("Current working directory:") {
+                                let after = &text[idx..];
+                                if let Some(colon) = after.find(':') {
+                                    let rest = after[colon + 1..].trim();
+                                    let line_end = rest.find('\n').unwrap_or(rest.len());
+                                    let cwd_str = rest[..line_end].trim();
+                                    return Some(cwd_str.to_string());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    let mut root = config.codex_home.clone();
+    root.push("sessions");
+    let mut newest: Option<(SystemTime, PathBuf)> = None;
+    let years = fs::read_dir(&root).ok()?;
+    for y in years.flatten() {
+        if !y.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+        let mons = fs::read_dir(y.path()).ok();
+        if mons.is_none() { continue; }
+        for m in mons.unwrap().flatten() {
+            if !m.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            let days = fs::read_dir(m.path()).ok();
+            if days.is_none() { continue; }
+            for d in days.unwrap().flatten() {
+                let files = fs::read_dir(d.path()).ok();
+                if files.is_none() { continue; }
+                for f in files.unwrap().flatten() {
+                    let fpath = f.path();
+                    let fname = fpath.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") { continue; }
+                    // filter by cwd
+                    if let Some(cwd_str) = extract_cwd_from_file(&fpath) {
+                        if cwd_str != config.cwd.to_string_lossy() { continue; }
+                    } else { continue; }
+
+                    let mt = f.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+                    match &newest {
+                        Some((cur, _)) if *cur >= mt => {}
+                        _ => newest = Some((mt, fpath)),
+                    }
+                }
+            }
+        }
+    }
+    newest.map(|(_, p)| p)
+}
+
+fn list_rollouts_for_cwd(config: &Config) -> Vec<std::path::PathBuf> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn extract_cwd_from_file(path: &PathBuf) -> Option<String> {
+        let text = fs::read_to_string(path).ok()?;
+        for line in text.lines().skip(1) {
+            let v: Value = serde_json::from_str(line).ok()?;
+            let item: codex_core::models::ResponseItem = serde_json::from_value(v).ok()?;
+            if let codex_core::models::ResponseItem::Message { content, .. } = item {
+                for c in content {
+                    match c {
+                        codex_core::models::ContentItem::InputText { text }
+                        | codex_core::models::ContentItem::OutputText { text } => {
+                            if let Some(idx) = text.find("Current working directory:") {
+                                let after = &text[idx..];
+                                if let Some(colon) = after.find(':') {
+                                    let rest = after[colon + 1..].trim();
+                                    let line_end = rest.find('\n').unwrap_or(rest.len());
+                                    let cwd_str = rest[..line_end].trim();
+                                    return Some(cwd_str.to_string());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    let mut root = config.codex_home.clone();
+    root.push("sessions");
+    let mut matches = Vec::new();
+    let years = match fs::read_dir(&root) { Ok(r) => r, Err(_) => return matches };
+    for y in years.flatten() {
+        if !y.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+        let mons = match fs::read_dir(y.path()) { Ok(r) => r, Err(_) => continue };
+        for m in mons.flatten() {
+            if !m.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            let days = match fs::read_dir(m.path()) { Ok(r) => r, Err(_) => continue };
+            for d in days.flatten() {
+                let files = match fs::read_dir(d.path()) { Ok(r) => r, Err(_) => continue };
+                for f in files.flatten() {
+                    let fpath = f.path();
+                    let fname = fpath.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                    if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") { continue; }
+                    if let Some(cwd_str) = extract_cwd_from_file(&fpath) {
+                        if cwd_str == config.cwd.to_string_lossy() {
+                            matches.push(fpath);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    matches
+}
+
+pub(crate) fn clear_conversations_for_cwd(config: &Config) -> std::io::Result<usize> {
+    use std::fs;
+    let paths = list_rollouts_for_cwd(config);
+    let mut removed = 0usize;
+    for p in paths {
+        if fs::remove_file(&p).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 #[expect(
