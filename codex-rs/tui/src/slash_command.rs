@@ -18,7 +18,6 @@ pub enum SlashCommand {
     Diff,
     Mention,
     Status,
-    Prompts,
     /// Clear saved conversations for the current directory.
     Clear,
     Logout,
@@ -41,7 +40,6 @@ impl SlashCommand {
             SlashCommand::Diff => "show git diff (including untracked files)",
             SlashCommand::Mention => "mention a file",
             SlashCommand::Status => "show current session configuration and token usage",
-            SlashCommand::Prompts => "show example prompts",
             SlashCommand::Clear => "clear saved conversations for the current directory",
             SlashCommand::Logout => "log out of Codex",
             #[cfg(debug_assertions)]

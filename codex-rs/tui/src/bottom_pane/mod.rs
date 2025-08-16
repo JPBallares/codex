@@ -60,6 +60,7 @@ pub(crate) struct BottomPaneParams {
     pub(crate) app_event_tx: AppEventSender,
     pub(crate) has_input_focus: bool,
     pub(crate) enhanced_keys_supported: bool,
+    pub(crate) placeholder_text: String,
 }
 
 impl BottomPane<'_> {
@@ -71,6 +72,7 @@ impl BottomPane<'_> {
                 params.has_input_focus,
                 params.app_event_tx.clone(),
                 enhanced_keys_supported,
+                params.placeholder_text,
             ),
             active_view: None,
             app_event_tx: params.app_event_tx,
@@ -370,6 +372,7 @@ mod tests {
             app_event_tx: tx,
             has_input_focus: true,
             enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
         });
         pane.push_approval_request(exec_request());
         assert_eq!(CancellationEvent::Handled, pane.on_ctrl_c());
@@ -387,6 +390,7 @@ mod tests {
             app_event_tx: tx,
             has_input_focus: true,
             enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
         });
 
         // Create an approval modal (active view).
@@ -415,6 +419,7 @@ mod tests {
             app_event_tx: tx.clone(),
             has_input_focus: true,
             enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
         });
 
         // Start a running task so the status indicator replaces the composer.
@@ -464,6 +469,7 @@ mod tests {
             app_event_tx: tx,
             has_input_focus: true,
             enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
         });
 
         // Begin a task: show initial status.
@@ -495,6 +501,7 @@ mod tests {
             app_event_tx: tx,
             has_input_focus: true,
             enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
         });
 
         // Activate spinner (status view replaces composer) with no live ring.
@@ -546,6 +553,7 @@ mod tests {
             app_event_tx: tx,
             has_input_focus: true,
             enhanced_keys_supported: false,
+            placeholder_text: "Ask Codex to do anything".to_string(),
         });
 
         pane.set_task_running(true);

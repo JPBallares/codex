@@ -439,11 +439,6 @@ impl App<'_> {
                             widget.add_status_output();
                         }
                     }
-                    SlashCommand::Prompts => {
-                        if let AppState::Chat { widget } = &mut self.app_state {
-                            widget.add_prompts_output();
-                        }
-                    }
                     SlashCommand::Clear => {
                         if let AppState::Chat { widget } = &mut self.app_state {
                             let cleared = crate::clear_conversations_for_cwd(&self.config);
