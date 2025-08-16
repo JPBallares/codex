@@ -9,7 +9,6 @@ use codex_ansi_escape::ansi_escape_line;
 use codex_common::create_config_summary_entries;
 use codex_common::elapsed::format_duration;
 use codex_core::config::Config;
-use codex_core::parse_command::ParsedCommand;
 use codex_core::plan_tool::PlanItemArg;
 use codex_core::plan_tool::StepStatus;
 use codex_core::plan_tool::UpdatePlanArgs;
@@ -20,6 +19,7 @@ use codex_core::protocol::SessionConfiguredEvent;
 use codex_core::protocol::TokenUsage;
 use codex_login::get_auth_file;
 use codex_login::try_read_auth_json;
+use codex_protocol::parse_command::ParsedCommand;
 use image::DynamicImage;
 use image::ImageReader;
 use mcp_types::EmbeddedResourceResource;
@@ -31,6 +31,7 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
 use ratatui::widgets::Wrap;
+use shlex::try_join as shlex_try_join;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::PathBuf;
@@ -232,10 +233,11 @@ fn exec_command_lines(
 ) -> Vec<Line<'static>> {
     match parsed.is_empty() {
         true => new_exec_command_generic(command, output, start_time),
-        false => new_parsed_command(parsed, output, start_time),
+        false => new_parsed_command(command, parsed, output, start_time),
     }
 }
 fn new_parsed_command(
+    command: &[String],
     parsed_commands: &[ParsedCommand],
     output: Option<&CommandOutput>,
     start_time: Option<Instant>,
@@ -259,6 +261,24 @@ fn new_parsed_command(
             ));
         }
     };
+
+    // Optionally include the complete, unaltered command from the model.
+    if std::env::var("SHOW_FULL_COMMANDS")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        let full_cmd = shlex_try_join(command.iter().map(|s| s.as_str()))
+            .unwrap_or_else(|_| command.join(" "));
+        lines.push(Line::from(vec![
+            Span::styled("  └ ", Style::default().add_modifier(Modifier::DIM)),
+            Span::styled(
+                full_cmd,
+                Style::default()
+                    .add_modifier(Modifier::DIM)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
 
     for (i, parsed) in parsed_commands.iter().enumerate() {
         let text = match parsed {
@@ -803,8 +823,32 @@ pub(crate) fn new_patch_apply_success(stdout: String) -> PlainHistoryCell {
         let mut iter = stdout.lines();
         for (i, raw) in iter.by_ref().take(TOOL_CALL_MAX_LINES).enumerate() {
             let prefix = if i == 0 { "  └ " } else { "    " };
-            let s = format!("{prefix}{raw}");
-            lines.push(ansi_escape_line(&s).dim());
+
+            // First line is the header; dim it entirely.
+            if i == 0 {
+                let s = format!("{prefix}{raw}");
+                lines.push(ansi_escape_line(&s).dim());
+                continue;
+            }
+
+            // Subsequent lines should look like: "M path/to/file".
+            // Colorize the status letter like `git status` (e.g., M red).
+            let status = raw.chars().next();
+            let rest = raw.get(1..).unwrap_or("");
+
+            let status_span = match status {
+                Some('M') => "M".red(),
+                Some('A') => "A".green(),
+                Some('D') => "D".red(),
+                Some(other) => other.to_string().into(),
+                None => "".into(),
+            };
+
+            lines.push(Line::from(vec![
+                prefix.into(),
+                status_span,
+                ansi_escape_line(rest).to_string().into(),
+            ]));
         }
         let remaining = iter.count();
         if remaining > 0 {

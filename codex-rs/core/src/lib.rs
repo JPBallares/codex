@@ -46,6 +46,7 @@ pub mod plan_tool;
 mod project_doc;
 pub mod protocol;
 pub mod rollout;
+mod rollout;
 pub(crate) mod safety;
 pub mod seatbelt;
 pub mod shell;
@@ -56,3 +57,9 @@ mod user_notification;
 pub mod util;
 pub use apply_patch::CODEX_APPLY_PATCH_ARG1;
 pub use safety::get_platform_sandbox;
+// Re-export the protocol types from the standalone `codex-protocol` crate so existing
+// `codex_core::protocol::...` references continue to work across the workspace.
+pub use codex_protocol::protocol;
+// Re-export protocol config enums to ensure call sites can use the same types
+// as those in the protocol crate when constructing protocol messages.
+pub use codex_protocol::config_types as protocol_config_types;
