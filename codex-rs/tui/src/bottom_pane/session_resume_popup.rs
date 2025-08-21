@@ -190,8 +190,8 @@ impl SessionResumePopup {
     }
 }
 
-impl<'a> BottomPaneView<'a> for SessionResumePopup {
-    fn handle_key_event(&mut self, _pane: &mut BottomPane<'a>, key_event: KeyEvent) {
+impl BottomPaneView for SessionResumePopup {
+    fn handle_key_event(&mut self, _pane: &mut BottomPane, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Up => self.move_selection_by(-1),
             KeyCode::Down => self.move_selection_by(1),
@@ -264,7 +264,7 @@ impl<'a> BottomPaneView<'a> for SessionResumePopup {
         }
     }
 
-    fn on_ctrl_c(&mut self, _pane: &mut BottomPane<'a>) -> CancellationEvent {
+    fn on_ctrl_c(&mut self, _pane: &mut BottomPane) -> CancellationEvent {
         self.done = true;
         CancellationEvent::Handled
     }
@@ -340,7 +340,7 @@ impl<'a> BottomPaneView<'a> for SessionResumePopup {
                 })
                 .collect()
         };
-        render_rows(content_area, buf, &rows, &self.state, MAX_POPUP_ROWS);
+        render_rows(content_area, buf, &rows, &self.state, MAX_POPUP_ROWS, false);
     }
 }
 
