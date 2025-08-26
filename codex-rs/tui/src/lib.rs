@@ -12,6 +12,7 @@ use codex_core::config::find_codex_home;
 use codex_core::config::load_config_as_toml_with_cli_overrides;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
+use codex_login::AuthManager;
 use codex_login::AuthMode;
 use codex_login::CodexAuth;
 use codex_ollama::DEFAULT_OSS_MODEL;
@@ -25,12 +26,15 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::prelude::*;
 
 mod app;
+mod app_backtrack;
 mod app_event;
 mod app_event_sender;
+mod backtrack_helpers;
 mod bottom_pane;
 mod chatwidget;
 mod citation_regex;
 mod cli;
+mod clipboard_paste;
 mod common;
 pub mod custom_terminal;
 mod diff_render;
@@ -127,10 +131,11 @@ pub async fn run_main(
         include_apply_patch_tool: None,
         disable_response_storage: cli.oss.then_some(true),
         show_raw_agent_reasoning: cli.oss.then_some(true),
+        tools_web_search_request: cli.web_search.then_some(true),
     };
-
-    // Parse `-c` overrides from the CLI.
-    let cli_kv_overrides = match cli.config_overrides.parse_overrides() {
+    let raw_overrides = cli.config_overrides.raw_overrides.clone();
+    let overrides_cli = codex_common::CliConfigOverrides { raw_overrides };
+    let cli_kv_overrides = match overrides_cli.parse_overrides() {
         Ok(v) => v,
         #[allow(clippy::print_stderr)]
         Err(e) => {
@@ -153,10 +158,11 @@ pub async fn run_main(
     };
 
     // If requested, resume the most recent saved conversation.
-    if cli.continue_session && config.experimental_resume.is_none() {
-        if let Some(path) = find_latest_rollout_for_cwd(&config) {
-            config.experimental_resume = Some(path);
-        }
+    if cli.continue_session
+        && config.experimental_resume.is_none()
+        && let Some(path) = find_latest_rollout_for_cwd(&config)
+    {
+        config.experimental_resume = Some(path);
     }
 
     // we load config.toml here to determine project state.
@@ -228,38 +234,6 @@ pub async fn run_main(
 
     let _ = tracing_subscriber::registry().with(file_layer).try_init();
 
-    #[allow(clippy::print_stderr)]
-    #[cfg(not(debug_assertions))]
-    if let Some(latest_version) = updates::get_upgrade_version(&config) {
-        let current_version = env!("CARGO_PKG_VERSION");
-        let exe = std::env::current_exe()?;
-        let managed_by_npm = std::env::var_os("CODEX_MANAGED_BY_NPM").is_some();
-
-        eprintln!(
-            "{} {current_version} -> {latest_version}.",
-            "✨⬆️ Update available!".bold().cyan()
-        );
-
-        if managed_by_npm {
-            let npm_cmd = "npm install -g @openai/codex@latest";
-            eprintln!("Run {} to update.", npm_cmd.cyan().on_black());
-        } else if cfg!(target_os = "macos")
-            && (exe.starts_with("/opt/homebrew") || exe.starts_with("/usr/local"))
-        {
-            let brew_cmd = "brew upgrade codex";
-            eprintln!("Run {} to update.", brew_cmd.cyan().on_black());
-        } else {
-            eprintln!(
-                "See {} for the latest releases and installation options.",
-                "https://github.com/openai/codex/releases/latest"
-                    .cyan()
-                    .on_black()
-            );
-        }
-
-        eprintln!("");
-    }
-
     run_ratatui_app(cli, config, should_show_trust_screen)
         .await
         .map_err(|err| std::io::Error::other(err.to_string()))
@@ -284,13 +258,62 @@ async fn run_ratatui_app(
     }));
     let mut terminal = tui::init()?;
     terminal.clear()?;
+
     let mut tui = Tui::new(terminal);
+
+    // Show update banner in terminal history (instead of stderr) so it is visible
+    // within the TUI scrollback. Building spans keeps styling consistent.
+    #[cfg(not(debug_assertions))]
+    if let Some(latest_version) = updates::get_upgrade_version(&config) {
+        use ratatui::style::Stylize as _;
+        use ratatui::text::Line;
+        use ratatui::text::Span;
+
+        let current_version = env!("CARGO_PKG_VERSION");
+        let exe = std::env::current_exe()?;
+        let managed_by_npm = std::env::var_os("CODEX_MANAGED_BY_NPM").is_some();
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::from(vec![
+            "✨⬆️ Update available!".bold().cyan(),
+            Span::raw(" "),
+            Span::raw(format!("{current_version} -> {latest_version}.")),
+        ]));
+
+        if managed_by_npm {
+            let npm_cmd = "npm install -g @openai/codex@latest";
+            lines.push(Line::from(vec![
+                Span::raw("Run "),
+                npm_cmd.cyan(),
+                Span::raw(" to update."),
+            ]));
+        } else if cfg!(target_os = "macos")
+            && (exe.starts_with("/opt/homebrew") || exe.starts_with("/usr/local"))
+        {
+            let brew_cmd = "brew upgrade codex";
+            lines.push(Line::from(vec![
+                Span::raw("Run "),
+                brew_cmd.cyan(),
+                Span::raw(" to update."),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw("See "),
+                "https://github.com/openai/codex/releases/latest".cyan(),
+                Span::raw(" for the latest releases and installation options."),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        tui.insert_history_lines(lines);
+    }
 
     // Initialize high-fidelity session event logging if enabled.
     session_log::maybe_init(&config);
 
     let Cli { prompt, images, .. } = cli;
 
+    let auth_manager = AuthManager::shared(config.codex_home.clone(), config.preferred_auth_method);
     let login_status = get_login_status(&config);
     let should_show_onboarding =
         should_show_onboarding(login_status, &config, should_show_trust_screen);
@@ -303,6 +326,7 @@ async fn run_ratatui_app(
                 show_trust_screen: should_show_trust_screen,
                 login_status,
                 preferred_auth_method: config.preferred_auth_method,
+                auth_manager: auth_manager.clone(),
             },
             &mut tui,
         )
@@ -313,7 +337,7 @@ async fn run_ratatui_app(
         }
     }
 
-    let app_result = App::run(&mut tui, config, prompt, images).await;
+    let app_result = App::run(&mut tui, auth_manager, config, prompt, images).await;
 
     restore();
     // Mark the end of the recorded session.
@@ -333,12 +357,11 @@ fn find_latest_rollout_for_cwd(config: &Config) -> Option<std::path::PathBuf> {
             use std::io::{BufRead, BufReader};
             let mut reader = BufReader::new(file);
             let mut first_line = String::new();
-            if reader.read_line(&mut first_line).is_ok() {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(first_line.trim()) {
-                    if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
-                        return Some(c.to_string());
-                    }
-                }
+            if reader.read_line(&mut first_line).is_ok()
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(first_line.trim())
+                && let Some(c) = v.get("cwd").and_then(|c| c.as_str())
+            {
+                return Some(c.to_string());
             }
         }
 
@@ -349,15 +372,15 @@ fn find_latest_rollout_for_cwd(config: &Config) -> Option<std::path::PathBuf> {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let item: codex_core::models::ResponseItem = match serde_json::from_value(v) {
+            let item: codex_protocol::models::ResponseItem = match serde_json::from_value(v) {
                 Ok(i) => i,
                 Err(_) => continue,
             };
-            if let codex_core::models::ResponseItem::Message { content, .. } = item {
+            if let codex_protocol::models::ResponseItem::Message { content, .. } = item {
                 for c in content {
                     match c {
-                        codex_core::models::ContentItem::InputText { text }
-                        | codex_core::models::ContentItem::OutputText { text } => {
+                        codex_protocol::models::ContentItem::InputText { text }
+                        | codex_protocol::models::ContentItem::OutputText { text } => {
                             if let Some(idx) = text.find("Current working directory:") {
                                 let after = &text[idx..];
                                 if let Some(colon) = after.find(':') {
@@ -384,24 +407,24 @@ fn find_latest_rollout_for_cwd(config: &Config) -> Option<std::path::PathBuf> {
         if !y.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        let mons = fs::read_dir(y.path()).ok();
-        if mons.is_none() {
-            continue;
-        }
-        for m in mons.unwrap().flatten() {
+        let mons = match fs::read_dir(y.path()) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for m in mons.flatten() {
             if !m.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 continue;
             }
-            let days = fs::read_dir(m.path()).ok();
-            if days.is_none() {
-                continue;
-            }
-            for d in days.unwrap().flatten() {
-                let files = fs::read_dir(d.path()).ok();
-                if files.is_none() {
-                    continue;
-                }
-                for f in files.unwrap().flatten() {
+            let days = match fs::read_dir(m.path()) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            for d in days.flatten() {
+                let files = match fs::read_dir(d.path()) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                for f in files.flatten() {
                     let fpath = f.path();
                     let fname = fpath.file_name().and_then(|s| s.to_str()).unwrap_or("");
                     if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") {
@@ -441,12 +464,11 @@ fn list_rollouts_for_cwd(config: &Config) -> Vec<std::path::PathBuf> {
             use std::io::{BufRead, BufReader};
             let mut reader = BufReader::new(file);
             let mut first_line = String::new();
-            if reader.read_line(&mut first_line).is_ok() {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(first_line.trim()) {
-                    if let Some(c) = v.get("cwd").and_then(|c| c.as_str()) {
-                        return Some(c.to_string());
-                    }
-                }
+            if reader.read_line(&mut first_line).is_ok()
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(first_line.trim())
+                && let Some(c) = v.get("cwd").and_then(|c| c.as_str())
+            {
+                return Some(c.to_string());
             }
         }
 
@@ -454,12 +476,12 @@ fn list_rollouts_for_cwd(config: &Config) -> Vec<std::path::PathBuf> {
         let text = fs::read_to_string(path).ok()?;
         for line in text.lines().skip(1) {
             let v: Value = serde_json::from_str(line).ok()?;
-            let item: codex_core::models::ResponseItem = serde_json::from_value(v).ok()?;
-            if let codex_core::models::ResponseItem::Message { content, .. } = item {
+            let item: codex_protocol::models::ResponseItem = serde_json::from_value(v).ok()?;
+            if let codex_protocol::models::ResponseItem::Message { content, .. } = item {
                 for c in content {
                     match c {
-                        codex_core::models::ContentItem::InputText { text }
-                        | codex_core::models::ContentItem::OutputText { text } => {
+                        codex_protocol::models::ContentItem::InputText { text }
+                        | codex_protocol::models::ContentItem::OutputText { text } => {
                             if let Some(idx) = text.find("Current working directory:") {
                                 let after = &text[idx..];
                                 if let Some(colon) = after.find(':') {
@@ -512,10 +534,10 @@ fn list_rollouts_for_cwd(config: &Config) -> Vec<std::path::PathBuf> {
                     if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") {
                         continue;
                     }
-                    if let Some(cwd_str) = extract_cwd_from_file(&fpath) {
-                        if cwd_str == config.cwd.to_string_lossy() {
-                            matches.push(fpath);
-                        }
+                    if let Some(cwd_str) = extract_cwd_from_file(&fpath)
+                        && cwd_str == config.cwd.to_string_lossy()
+                    {
+                        matches.push(fpath);
                     }
                 }
             }

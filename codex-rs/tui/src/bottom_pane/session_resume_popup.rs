@@ -23,7 +23,7 @@ use crate::bottom_pane::selection_popup_common::GenericDisplayRow;
 use crate::bottom_pane::selection_popup_common::render_rows;
 use codex_common::fuzzy_match::fuzzy_match;
 use codex_core::config::Config;
-use codex_core::models::ResponseItem;
+use codex_protocol::models::ResponseItem;
 use serde_json::Value;
 
 // LRU cache for extracted titles to avoid re-reading unchanged files and prevent unbounded growth
@@ -60,13 +60,13 @@ impl TitleCache {
     }
 
     fn get_if_fresh(&mut self, key: &PathBuf, modified: SystemTime) -> Option<String> {
-        if let Some((seen_mtime, title)) = self.map.get(key) {
-            if *seen_mtime >= modified {
-                // Clone first to end the immutable borrow before mutating
-                let out = title.clone();
-                self.touch(key);
-                return Some(out);
-            }
+        if let Some((seen_mtime, title)) = self.map.get(key)
+            && *seen_mtime >= modified
+        {
+            // Clone first to end the immutable borrow before mutating
+            let out = title.clone();
+            self.touch(key);
+            return Some(out);
         }
         None
     }
@@ -353,19 +353,19 @@ fn collect_sessions(config: &Config, max_entries: usize) -> Vec<SessionEntry> {
         return Vec::new();
     };
     for y in years.flatten() {
-        if let Ok(ft) = y.file_type() {
-            if !ft.is_dir() {
-                continue;
-            }
+        if let Ok(ft) = y.file_type()
+            && !ft.is_dir()
+        {
+            continue;
         }
         let Ok(mons) = fs::read_dir(y.path()) else {
             continue;
         };
         for m in mons.flatten() {
-            if let Ok(ft) = m.file_type() {
-                if !ft.is_dir() {
-                    continue;
-                }
+            if let Ok(ft) = m.file_type()
+                && !ft.is_dir()
+            {
+                continue;
             }
             let Ok(days) = fs::read_dir(m.path()) else {
                 continue;
@@ -444,7 +444,9 @@ fn collect_sessions(config: &Config, max_entries: usize) -> Vec<SessionEntry> {
     out
 }
 
-fn label_for_path(path: &PathBuf) -> String {
+use std::path::Path;
+
+fn label_for_path(path: &Path) -> String {
     // Prefer file name (includes timestamp + uuid). Show parent date folder as context.
     let name = path
         .file_name()
@@ -463,7 +465,7 @@ fn label_for_path(path: &PathBuf) -> String {
 }
 
 fn build_label(
-    path: &PathBuf,
+    path: &Path,
     meta: Option<&(String, Option<String>)>,
     _cwd: Option<&str>,
     title: Option<&str>,
@@ -484,25 +486,31 @@ fn build_label(
         parts.push(readable_time);
 
         // Add branch info if it's not main/master
-        if let Some(b) = branch {
-            if !b.is_empty() && b != "main" && b != "master" {
-                parts.push(format!("Branch: {}", b));
-            }
+        if let Some(b) = branch
+            && !b.is_empty()
+            && b != "main"
+            && b != "master"
+        {
+            parts.push(format!("Branch: {}", b));
         }
     }
 
     // If no meaningful title was found, make timestamp more prominent
-    if title.is_none() && meta.is_some() {
-        if let Some((ts, _)) = meta {
-            let readable_time = format_readable_timestamp(ts);
-            parts.clear(); // Remove the plain timestamp we added earlier
-            parts.push(format!("Session from {}", readable_time));
-            // Re-add branch info if it's not main/master
-            if let Some(b) = meta.unwrap().1.as_ref() {
-                if !b.is_empty() && b != "main" && b != "master" {
-                    parts.push(format!("Branch: {}", b));
-                }
-            }
+    if title.is_none()
+        && meta.is_some()
+        && let Some((ts, _)) = meta
+    {
+        let readable_time = format_readable_timestamp(ts);
+        parts.clear(); // Remove the plain timestamp we added earlier
+        parts.push(format!("Session from {}", readable_time));
+        // Re-add branch info if it's not main/master
+        if let Some((_, b_opt)) = meta
+            && let Some(b) = b_opt.as_ref()
+            && !b.is_empty()
+            && b != "main"
+            && b != "master"
+        {
+            parts.push(format!("Branch: {}", b));
         }
     }
 
@@ -557,10 +565,10 @@ fn extract_title_cached(path: &PathBuf) -> Option<String> {
     };
 
     // First, attempt to get a fresh cached value without holding the lock during I/O
-    if let Ok(mut cache) = get_title_cache().lock() {
-        if let Some(title) = cache.get_if_fresh(path, modified) {
-            return Some(title);
-        }
+    if let Ok(mut cache) = get_title_cache().lock()
+        && let Some(title) = cache.get_if_fresh(path, modified)
+    {
+        return Some(title);
     }
 
     // Extract title without holding the lock
@@ -631,8 +639,8 @@ fn extract_title_streaming(path: &PathBuf) -> Option<String> {
                 let mut acc = String::new();
                 for c in content {
                     match c {
-                        codex_core::models::ContentItem::OutputText { text }
-                        | codex_core::models::ContentItem::InputText { text } => {
+                        codex_protocol::models::ContentItem::OutputText { text }
+                        | codex_protocol::models::ContentItem::InputText { text } => {
                             // Skip environment context messages
                             if text.contains("<environment_context>") {
                                 continue;
@@ -652,13 +660,13 @@ fn extract_title_streaming(path: &PathBuf) -> Option<String> {
                 }
 
                 // Extract file mentions early
-                extract_file_mentions(&acc, &mut files_mentioned);
+                extract_file_mentions(acc, &mut files_mentioned);
 
                 // Filter candidates
                 let looks_like_command = acc.starts_with('/');
                 let too_short = acc.split_whitespace().take(3).count() < 3;
-                let is_boilerplate = is_boilerplate_message(&acc);
-                let is_placeholder = is_placeholder_text(&acc);
+                let is_boilerplate = is_boilerplate_message(acc);
+                let is_placeholder = is_placeholder_text(acc);
 
                 if role == "user"
                     && !looks_like_command
@@ -669,10 +677,13 @@ fn extract_title_streaming(path: &PathBuf) -> Option<String> {
                     if user_candidates.len() < MAX_CANDIDATES_PER_TYPE {
                         user_candidates.push(acc.to_string());
                     }
-                } else if role == "assistant" && !too_short && !is_boilerplate && !is_placeholder {
-                    if assistant_candidates.len() < MAX_CANDIDATES_PER_TYPE {
-                        assistant_candidates.push(acc.to_string());
-                    }
+                } else if role == "assistant"
+                    && !too_short
+                    && !is_boilerplate
+                    && !is_placeholder
+                    && assistant_candidates.len() < MAX_CANDIDATES_PER_TYPE
+                {
+                    assistant_candidates.push(acc.to_string());
                 }
             }
             ResponseItem::FunctionCall {
@@ -685,23 +696,22 @@ fn extract_title_streaming(path: &PathBuf) -> Option<String> {
 
                 match name.as_str() {
                     "edit_file" | "write_file" | "create_file" => {
-                        if let Ok(args) = serde_json::from_str::<serde_json::Value>(&arguments) {
-                            if let Some(file_path) = args
+                        if let Ok(args) = serde_json::from_str::<serde_json::Value>(&arguments)
+                            && let Some(file_path) = args
                                 .get("file_path")
                                 .or_else(|| args.get("path"))
                                 .and_then(|p| p.as_str())
-                            {
-                                tool_calls.push(format!("edited {}", extract_filename(file_path)));
-                            }
+                        {
+                            tool_calls.push(format!("edited {}", extract_filename(file_path)));
                         }
                     }
                     "bash" | "shell" => {
-                        if let Ok(args) = serde_json::from_str::<serde_json::Value>(&arguments) {
-                            if let Some(command) = args.get("command").and_then(|c| c.as_str()) {
-                                let cmd_summary = summarize_command(command);
-                                if !cmd_summary.is_empty() {
-                                    tool_calls.push(cmd_summary);
-                                }
+                        if let Ok(args) = serde_json::from_str::<serde_json::Value>(&arguments)
+                            && let Some(command) = args.get("command").and_then(|c| c.as_str())
+                        {
+                            let cmd_summary = summarize_command(command);
+                            if !cmd_summary.is_empty() {
+                                tool_calls.push(cmd_summary);
                             }
                         }
                     }
@@ -764,7 +774,7 @@ fn extract_file_mentions(text: &str, files: &mut Vec<String>) {
 }
 
 fn extract_filename(path: &str) -> &str {
-    path.split('/').last().unwrap_or(path)
+    path.split('/').next_back().unwrap_or(path)
 }
 
 fn is_boilerplate_message(text: &str) -> bool {
@@ -1021,8 +1031,8 @@ fn extract_cwd(path: &PathBuf) -> Option<String> {
         if let ResponseItem::Message { content, .. } = item {
             for c in content {
                 match c {
-                    codex_core::models::ContentItem::InputText { text }
-                    | codex_core::models::ContentItem::OutputText { text } => {
+                    codex_protocol::models::ContentItem::InputText { text }
+                    | codex_protocol::models::ContentItem::OutputText { text } => {
                         if let Some(idx) = text.find("Current working directory:") {
                             let after = &text[idx..];
                             if let Some(colon) = after.find(':') {
@@ -1044,15 +1054,15 @@ fn extract_cwd(path: &PathBuf) -> Option<String> {
 /// Read the JSONL header line to extract timestamp, branch, cwd, and instructions.
 /// Also scans a few subsequent lines to find a meta_update containing an initial prompt prefix.
 /// Returns (timestamp, branch, cwd, instructions, prompt_prefix).
-fn extract_header_fields(
-    path: &PathBuf,
-) -> Option<(
+type HeaderFields = (
     String,
     Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
-)> {
+);
+
+fn extract_header_fields(path: &PathBuf) -> Option<HeaderFields> {
     use std::io::{BufRead, BufReader};
 
     let file = fs::File::open(path).ok()?;
@@ -1090,19 +1100,16 @@ fn extract_header_fields(
         if line.is_empty() {
             continue;
         }
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            if v.get("record_type")
+        if let Ok(v) = serde_json::from_str::<Value>(line)
+            && v.get("record_type")
                 .and_then(|x| x.as_str())
                 .map(|s| s == "meta_update")
                 .unwrap_or(false)
-            {
-                if let Some(pp) = v.get("prompt_prefix").and_then(|x| x.as_str()) {
-                    if !pp.is_empty() {
-                        prompt_prefix = Some(pp.to_string());
-                        break;
-                    }
-                }
-            }
+            && let Some(pp) = v.get("prompt_prefix").and_then(|x| x.as_str())
+            && !pp.is_empty()
+        {
+            prompt_prefix = Some(pp.to_string());
+            break;
         }
     }
 
@@ -1119,11 +1126,7 @@ fn extract_last_meta_title(path: &PathBuf) -> Option<String> {
 
     let mut file = fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    let start = if len > TAIL_READ_SIZE {
-        len - TAIL_READ_SIZE
-    } else {
-        0
-    };
+    let start = len.saturating_sub(TAIL_READ_SIZE);
     if file.seek(SeekFrom::Start(start)).is_err() {
         return None;
     }
@@ -1137,18 +1140,16 @@ fn extract_last_meta_title(path: &PathBuf) -> Option<String> {
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            if v.get("record_type")
+        if let Ok(v) = serde_json::from_str::<Value>(line)
+            && v.get("record_type")
                 .and_then(|x| x.as_str())
                 .map(|s| s == "meta_update")
                 .unwrap_or(false)
-            {
-                if let Some(title) = v.get("title").and_then(|x| x.as_str()) {
-                    let title = title.trim();
-                    if !title.is_empty() {
-                        return Some(title.to_string());
-                    }
-                }
+            && let Some(title) = v.get("title").and_then(|x| x.as_str())
+        {
+            let title = title.trim();
+            if !title.is_empty() {
+                return Some(title.to_string());
             }
         }
     }

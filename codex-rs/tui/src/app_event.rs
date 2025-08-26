@@ -1,3 +1,4 @@
+use codex_core::protocol::ConversationHistoryResponseEvent;
 use codex_core::protocol::Event;
 use codex_file_search::FileMatch;
 use ratatui::text::Line;
@@ -5,7 +6,6 @@ use std::path::PathBuf;
 
 use crate::history_cell::HistoryCell;
 
-use crate::slash_command::SlashCommand;
 use codex_core::protocol::AskForApproval;
 use codex_core::protocol::SandboxPolicy;
 use codex_core::protocol_config_types::ReasoningEffort;
@@ -15,16 +15,15 @@ use codex_core::protocol_config_types::ReasoningEffort;
 pub(crate) enum AppEvent {
     CodexEvent(Event),
 
+    /// Start a new session.
+    NewSession,
+
     /// Request to exit the application gracefully.
     ExitRequest,
 
     /// Forward an `Op` to the Agent. Using an `AppEvent` for this avoids
     /// bubbling channels through layers of widgets.
     CodexOp(codex_core::protocol::Op),
-
-    /// Dispatch a recognized slash command from the UI (composer) to the app
-    /// layer so it can be handled centrally.
-    DispatchCommand(SlashCommand),
 
     /// Kick off an asynchronous file search for the given query (text after
     /// the `@`). Previous searches may be cancelled by the app layer so there
@@ -53,6 +52,7 @@ pub(crate) enum AppEvent {
     ResumeSession(PathBuf),
 
     /// Onboarding: result of login_with_chatgpt.
+    #[allow(dead_code)]
     OnboardingAuthComplete(Result<(), String>),
     /// Update the current reasoning effort in the running app and widget.
     UpdateReasoningEffort(ReasoningEffort),
@@ -65,4 +65,7 @@ pub(crate) enum AppEvent {
 
     /// Update the current sandbox policy in the running app and widget.
     UpdateSandboxPolicy(SandboxPolicy),
+
+    /// Forwarded conversation history snapshot from the current conversation.
+    ConversationHistory(ConversationHistoryResponseEvent),
 }

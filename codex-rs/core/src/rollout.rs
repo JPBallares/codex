@@ -23,7 +23,7 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::git_info::GitInfo;
 use crate::git_info::collect_git_info;
-use crate::models::ResponseItem;
+use codex_protocol::models::ResponseItem;
 
 const SESSIONS_SUBDIR: &str = "sessions";
 
@@ -137,6 +137,8 @@ impl RolloutRecorder {
                 | ResponseItem::LocalShellCall { .. }
                 | ResponseItem::FunctionCall { .. }
                 | ResponseItem::FunctionCallOutput { .. }
+                | ResponseItem::CustomToolCall { .. }
+                | ResponseItem::CustomToolCallOutput { .. }
                 | ResponseItem::Reasoning { .. } => filtered.push(item.clone()),
                 ResponseItem::Other => {
                     // These should never be serialized.
@@ -217,6 +219,8 @@ impl RolloutRecorder {
                     | ResponseItem::LocalShellCall { .. }
                     | ResponseItem::FunctionCall { .. }
                     | ResponseItem::FunctionCallOutput { .. }
+                    | ResponseItem::CustomToolCall { .. }
+                    | ResponseItem::CustomToolCallOutput { .. }
                     | ResponseItem::Reasoning { .. } => items.push(item),
                     ResponseItem::Other => {}
                 },
@@ -243,17 +247,15 @@ impl RolloutRecorder {
         let mut has_prompt_prefix = false;
         if let Ok(text) = std::fs::read_to_string(path) {
             for line in text.lines() {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                    if v.get("record_type")
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+                    && v.get("record_type")
                         .and_then(|x| x.as_str())
                         .map(|s| s == "meta_update")
                         .unwrap_or(false)
-                    {
-                        if v.get("prompt_prefix").and_then(|x| x.as_str()).is_some() {
-                            has_prompt_prefix = true;
-                            break;
-                        }
-                    }
+                    && v.get("prompt_prefix").and_then(|x| x.as_str()).is_some()
+                {
+                    has_prompt_prefix = true;
+                    break;
                 }
             }
         }
@@ -363,48 +365,47 @@ async fn rollout_writer(
                 for item in items {
                     // If this is the first user message and we haven't recorded the prompt prefix yet,
                     // extract and write a lightweight meta update.
-                    if !wrote_prompt_prefix {
-                        if let ResponseItem::Message { role, content, .. } = &item {
-                            if role == "user" {
-                                let mut acc = String::new();
-                                let mut contains_user_instructions_tag = false;
-                                for c in content {
-                                    if let crate::models::ContentItem::InputText { text }
-                                    | crate::models::ContentItem::OutputText { text } = c
-                                    {
-                                        if text.contains("<user_instructions>")
-                                            || text.contains("</user_instructions>")
-                                        {
-                                            contains_user_instructions_tag = true;
-                                        }
-                                        if !acc.is_empty() {
-                                            acc.push(' ');
-                                        }
-                                        acc.push_str(text);
-                                    }
-                                }
-                                let acc = acc.trim();
-                                // Only use true user-typed prompt (exclude tagged user_instructions
-                                // and slash commands from the composer).
-                                if !acc.is_empty()
-                                    && !acc.starts_with('/')
-                                    && !contains_user_instructions_tag
+                    if !wrote_prompt_prefix
+                        && let ResponseItem::Message { role, content, .. } = &item
+                        && role == "user"
+                    {
+                        let mut acc = String::new();
+                        let mut contains_user_instructions_tag = false;
+                        for c in content {
+                            if let codex_protocol::models::ContentItem::InputText { text }
+                            | codex_protocol::models::ContentItem::OutputText { text } = c
+                            {
+                                if text.contains("<user_instructions>")
+                                    || text.contains("</user_instructions>")
                                 {
-                                    let prefix: String = acc.chars().take(16).collect();
-                                    if !prefix.is_empty() {
-                                        #[derive(Serialize)]
-                                        struct MetaUpdateLine<'a> {
-                                            record_type: &'static str,
-                                            prompt_prefix: &'a str,
-                                        }
-                                        let line = MetaUpdateLine {
-                                            record_type: "meta_update",
-                                            prompt_prefix: &prefix,
-                                        };
-                                        writer.write_line(&line).await?;
-                                        wrote_prompt_prefix = true;
-                                    }
+                                    contains_user_instructions_tag = true;
                                 }
+                                if !acc.is_empty() {
+                                    acc.push(' ');
+                                }
+                                acc.push_str(text);
+                            }
+                        }
+                        let acc = acc.trim();
+                        // Only use true user-typed prompt (exclude tagged user_instructions
+                        // and slash commands from the composer).
+                        if !acc.is_empty()
+                            && !acc.starts_with('/')
+                            && !contains_user_instructions_tag
+                        {
+                            let prefix: String = acc.chars().take(16).collect();
+                            if !prefix.is_empty() {
+                                #[derive(Serialize)]
+                                struct MetaUpdateLine<'a> {
+                                    record_type: &'static str,
+                                    prompt_prefix: &'a str,
+                                }
+                                let line = MetaUpdateLine {
+                                    record_type: "meta_update",
+                                    prompt_prefix: &prefix,
+                                };
+                                writer.write_line(&line).await?;
+                                wrote_prompt_prefix = true;
                             }
                         }
                     }
@@ -414,37 +415,41 @@ async fn rollout_writer(
                         | ResponseItem::LocalShellCall { .. }
                         | ResponseItem::FunctionCall { .. }
                         | ResponseItem::FunctionCallOutput { .. }
+                        | ResponseItem::CustomToolCall { .. }
+                        | ResponseItem::CustomToolCallOutput { .. }
                         | ResponseItem::Reasoning { .. } => {
                             // If this is an assistant reply, emit/update a metadata title based on
                             // the first 30 characters of the reply text, so the TUI can display it.
-                            if let ResponseItem::Message { role, content, .. } = &item {
-                                if role == "assistant" {
-                                    let mut acc = String::new();
-                                    for c in content {
-                                        if let crate::models::ContentItem::InputText { text }
-                                        | crate::models::ContentItem::OutputText { text } = c
-                                        {
-                                            if !acc.is_empty() {
-                                                acc.push(' ');
-                                            }
-                                            acc.push_str(text);
+                            if let ResponseItem::Message { role, content, .. } = &item
+                                && role == "assistant"
+                            {
+                                let mut acc = String::new();
+                                for c in content {
+                                    if let codex_protocol::models::ContentItem::InputText { text }
+                                    | codex_protocol::models::ContentItem::OutputText {
+                                        text,
+                                    } = c
+                                    {
+                                        if !acc.is_empty() {
+                                            acc.push(' ');
                                         }
+                                        acc.push_str(text);
                                     }
-                                    let title_src = acc.trim();
-                                    if !title_src.is_empty() {
-                                        let title: String = title_src.chars().take(30).collect();
-                                        if !title.is_empty() {
-                                            #[derive(Serialize)]
-                                            struct MetaUpdateTitle<'a> {
-                                                record_type: &'static str,
-                                                title: &'a str,
-                                            }
-                                            let line = MetaUpdateTitle {
-                                                record_type: "meta_update",
-                                                title: &title,
-                                            };
-                                            writer.write_line(&line).await?;
+                                }
+                                let title_src = acc.trim();
+                                if !title_src.is_empty() {
+                                    let title: String = title_src.chars().take(30).collect();
+                                    if !title.is_empty() {
+                                        #[derive(Serialize)]
+                                        struct MetaUpdateTitle<'a> {
+                                            record_type: &'static str,
+                                            title: &'a str,
                                         }
+                                        let line = MetaUpdateTitle {
+                                            record_type: "meta_update",
+                                            title: &title,
+                                        };
+                                        writer.write_line(&line).await?;
                                     }
                                 }
                             }
@@ -512,38 +517,34 @@ pub fn find_most_recent_rollout(config: &Config) -> Option<std::path::PathBuf> {
         let Ok(ft) = entry.file_type() else {
             continue;
         };
-        if ft.is_dir() {
-            if let Ok(rd) = fs::read_dir(&path) {
-                for m in rd.flatten() {
-                    if let Ok(m_ft) = m.file_type() {
-                        if m_ft.is_dir() {
-                            if let Ok(rd2) = fs::read_dir(m.path()) {
-                                for d in rd2.flatten() {
-                                    // leaf day dir — enumerate files
-                                    if let Ok(rd3) = fs::read_dir(d.path()) {
-                                        for f in rd3.flatten() {
-                                            let fpath = f.path();
-                                            if !fpath
-                                                .file_name()
-                                                .and_then(|s| s.to_str())
-                                                .map(|s| {
-                                                    s.starts_with("rollout-")
-                                                        && s.ends_with(".jsonl")
-                                                })
-                                                .unwrap_or(false)
-                                            {
-                                                continue;
-                                            }
-                                            let mt = f
-                                                .metadata()
-                                                .and_then(|m| m.modified())
-                                                .unwrap_or(SystemTime::UNIX_EPOCH);
-                                            match &newest {
-                                                Some((cur, _)) if *cur >= mt => {}
-                                                _ => newest = Some((mt, fpath)),
-                                            }
-                                        }
-                                    }
+        if ft.is_dir()
+            && let Ok(rd) = fs::read_dir(&path)
+        {
+            for m in rd.flatten() {
+                if let Ok(m_ft) = m.file_type()
+                    && m_ft.is_dir()
+                    && let Ok(rd2) = fs::read_dir(m.path())
+                {
+                    for d in rd2.flatten() {
+                        // leaf day dir — enumerate files
+                        if let Ok(rd3) = fs::read_dir(d.path()) {
+                            for f in rd3.flatten() {
+                                let fpath = f.path();
+                                if !fpath
+                                    .file_name()
+                                    .and_then(|s| s.to_str())
+                                    .map(|s| s.starts_with("rollout-") && s.ends_with(".jsonl"))
+                                    .unwrap_or(false)
+                                {
+                                    continue;
+                                }
+                                let mt = f
+                                    .metadata()
+                                    .and_then(|m| m.modified())
+                                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                                match &newest {
+                                    Some((cur, _)) if *cur >= mt => {}
+                                    _ => newest = Some((mt, fpath)),
                                 }
                             }
                         }
