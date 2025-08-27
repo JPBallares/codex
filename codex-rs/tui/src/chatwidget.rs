@@ -118,6 +118,8 @@ pub(crate) struct ChatWidget {
     last_history_was_exec: bool,
     // User messages queued while a turn is in progress
     queued_user_messages: VecDeque<UserMessage>,
+    // Whether we've already replayed a saved session transcript
+    did_replay_session: bool,
 }
 
 struct UserMessage {
@@ -153,11 +155,15 @@ impl ChatWidget {
             .set_history_metadata(event.history_log_id, event.history_entry_count);
         self.session_id = Some(event.session_id);
         // If resuming a session, attempt to replay its transcript into the history view.
-        if let Some(path) = self.config.experimental_resume.clone()
-            && let Err(e) = replay_saved_session_into_history(self, &path)
-        {
-            let msg = format!("Failed to replay saved session: {e}");
-            self.add_to_history(history_cell::new_background_event(msg));
+        if !self.did_replay_session {
+            if let Some(path) = self.config.experimental_resume.clone()
+                && let Err(e) = replay_saved_session_into_history(self, &path)
+            {
+                let msg = format!("Failed to replay saved session: {e}");
+                self.add_to_history(history_cell::new_background_event(msg));
+            } else if self.config.experimental_resume.is_some() {
+                self.did_replay_session = true;
+            }
         }
         self.add_to_history(history_cell::new_session_info(
             &self.config,
@@ -611,7 +617,20 @@ impl ChatWidget {
             last_history_was_exec: false,
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: true,
+            did_replay_session: false,
         };
+        // Show welcome banner immediately; avoid duplicate on session configured
+        s.add_to_history(crate::history_cell::new_welcome_info(&s.config));
+        s.show_welcome_banner = false;
+        // If resuming, replay transcript immediately so it appears before first prompt.
+        if let Some(path) = s.config.experimental_resume.clone() {
+            if let Err(e) = replay_saved_session_into_history(&mut s, &path) {
+                let msg = format!("Failed to replay saved session: {e}");
+                s.add_to_history(history_cell::new_background_event(msg));
+            } else {
+                s.did_replay_session = true;
+            }
+        }
         if s.initial_user_message.is_some() {
             s.ensure_agent_started();
         }
@@ -662,6 +681,7 @@ impl ChatWidget {
             queued_user_messages: VecDeque::new(),
             show_welcome_banner: false,
             conversation_manager: server,
+            did_replay_session: false,
         }
     }
 

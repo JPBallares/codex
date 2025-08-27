@@ -223,34 +223,7 @@ pub(crate) fn new_session_info(
         history_entry_count: _,
     } = event;
     if is_first_event {
-        let cwd_str = match relativize_to_home(&config.cwd) {
-            Some(rel) if !rel.as_os_str().is_empty() => {
-                let sep = std::path::MAIN_SEPARATOR;
-                format!("~{sep}{}", rel.display())
-            }
-            Some(_) => "~".to_string(),
-            None => config.cwd.display().to_string(),
-        };
-
-        let lines: Vec<Line<'static>> = vec![
-            Line::from(Span::from("")),
-            Line::from(vec![
-                Span::raw(">_ ").dim(),
-                Span::styled(
-                    "You are using OpenAI Codex in",
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!(" {cwd_str}")).dim(),
-            ]),
-            Line::from("".dim()),
-            Line::from(" To get started, describe a task or try one of these commands:".dim()),
-            Line::from("".dim()),
-            Line::from(format!(" /init - {}", SlashCommand::Init.description()).dim()),
-            Line::from(format!(" /status - {}", SlashCommand::Status.description()).dim()),
-            Line::from(format!(" /approvals - {}", SlashCommand::Approvals.description()).dim()),
-            Line::from(format!(" /model - {}", SlashCommand::Model.description()).dim()),
-        ];
-        PlainHistoryCell { lines }
+        new_welcome_info(config)
     } else if config.model == model {
         PlainHistoryCell { lines: Vec::new() }
     } else {
@@ -262,6 +235,37 @@ pub(crate) fn new_session_info(
         ];
         PlainHistoryCell { lines }
     }
+}
+
+pub(crate) fn new_welcome_info(config: &Config) -> PlainHistoryCell {
+    let cwd_str = match relativize_to_home(&config.cwd) {
+        Some(rel) if !rel.as_os_str().is_empty() => {
+            let sep = std::path::MAIN_SEPARATOR;
+            format!("~{sep}{}", rel.display())
+        }
+        Some(_) => "~".to_string(),
+        None => config.cwd.display().to_string(),
+    };
+
+    let lines: Vec<Line<'static>> = vec![
+        Line::from(Span::from("")),
+        Line::from(vec![
+            Span::raw(">_ ").dim(),
+            Span::styled(
+                "You are using OpenAI Codex in",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(" {cwd_str}")).dim(),
+        ]),
+        Line::from("".dim()),
+        Line::from(" To get started, describe a task or try one of these commands:".dim()),
+        Line::from("".dim()),
+        Line::from(format!(" /init - {}", SlashCommand::Init.description()).dim()),
+        Line::from(format!(" /status - {}", SlashCommand::Status.description()).dim()),
+        Line::from(format!(" /approvals - {}", SlashCommand::Approvals.description()).dim()),
+        Line::from(format!(" /model - {}", SlashCommand::Model.description()).dim()),
+    ];
+    PlainHistoryCell { lines }
 }
 
 pub(crate) fn new_user_prompt(message: String) -> PlainHistoryCell {
