@@ -218,6 +218,29 @@ Users can specify config values at multiple levels. Order of precedence is as fo
 3. as an entry in `config.toml`, e.g., `model = "o3"`
 4. the default value that comes with Codex CLI (i.e., Codex CLI defaults to `gpt-5`)
 
+## server
+
+Configure server mode defaults when running `codex serve`.
+
+```toml
+[server]
+# Bind address and port for the localhost API
+bind_address = "127.0.0.1"
+port = 8765
+
+# Which APIs to enable: "openai", "mcp", or "both"
+api = "openai"
+
+# Authentication: set a static bearer token or enable no‑auth for local dev only
+auth_token = ""     # if empty, a token must be provided via CLI unless no_auth=true
+no_auth = false      # only allowed when bind_address is loopback
+
+# CORS: allowed origins (empty means disabled)
+cors_origins = []
+```
+
+These settings are optional. All other config (e.g., `model`, `model_provider`, provider overrides) applies to the server as it does to the interactive and exec modes.
+
 ## model_reasoning_effort
 
 If the selected model is known to support reasoning (for example: `o3`, `o4-mini`, `codex-*`, `gpt-5`), reasoning is enabled by default when using the Responses API. As explained in the [OpenAI Platform documentation](https://platform.openai.com/docs/guides/reasoning?api-mode=responses#get-started-with-reasoning), this can be set to:

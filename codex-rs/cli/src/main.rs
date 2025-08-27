@@ -14,6 +14,7 @@ use codex_cli::login::run_logout;
 use codex_cli::proto;
 use codex_common::CliConfigOverrides;
 use codex_exec::Cli as ExecCli;
+use codex_server::Cli as ServeCli;
 use codex_tui::Cli as TuiCli;
 use std::path::PathBuf;
 
@@ -58,6 +59,9 @@ enum Subcommand {
 
     /// Experimental: run Codex as an MCP server.
     Mcp,
+
+    /// Run a local HTTP server that exposes an OpenAI-compatible API.
+    Serve(ServeCli),
 
     /// Run the Protocol stream via stdin/stdout
     #[clap(visible_alias = "p")]
@@ -160,6 +164,10 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         }
         Some(Subcommand::Mcp) => {
             codex_mcp_server::run_main(codex_linux_sandbox_exe, cli.config_overrides).await?;
+        }
+        Some(Subcommand::Serve(serve_cli)) => {
+            codex_server::run_main(serve_cli, codex_linux_sandbox_exe, cli.config_overrides)
+                .await?;
         }
         Some(Subcommand::Login(mut login_cli)) => {
             prepend_config_flags(&mut login_cli.config_overrides, cli.config_overrides);

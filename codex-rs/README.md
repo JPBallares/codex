@@ -31,6 +31,16 @@ It is still experimental, but you can also launch Codex as an MCP _server_ by ru
 npx @modelcontextprotocol/inspector codex mcp
 ```
 
+### Server mode (localhost API)
+
+Expose Codex to other local apps over HTTP by running the CLI in server mode (planned):
+
+```
+codex serve --port 8765 --token "$CODEX_SERVER_TOKEN"
+```
+
+This provides a minimal OpenAI‑compatible `/v1/chat/completions` endpoint (with streaming) and a `/v1/responses` proxy for ChatGPT/Responses API, bound to `127.0.0.1` by default, plus a health check and model listing. See docs/server_mode.md for the API, flags, auth, and examples.
+
 ### Notifications
 
 You can enable notifications by configuring a script that is run whenever the agent finishes a turn. The [notify documentation](./config.md#notify) includes a detailed example that explains how to get desktop notifications via [terminal-notifier](https://github.com/julienXX/terminal-notifier) on macOS.

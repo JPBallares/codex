@@ -1,0 +1,36 @@
+[package]
+name = "codex-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.7", features = ["json", "macros", "ws"] }
+http = "1"
+hyper = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+time = { version = "0.3", features = ["macros"] }
+
+clap = { version = "4", features = ["derive"] }
+
+codex-common = { path = "../common", package = "codex-common", features = ["cli"] }
+codex-core = { path = "../core", package = "codex-core" }
+codex-login = { path = "../login", package = "codex-login" }
+codex-protocol = { path = "../protocol", package = "codex-protocol" }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio-stream = "0.1"
+futures = "0.3"
+memchr = "2"
+bytes = "1"
+
+[dev-dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+axum = { version = "0.7", features = ["json", "macros", "ws"] }
